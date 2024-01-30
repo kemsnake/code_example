@@ -1,0 +1,4 @@
+email_template: "Your account @name has been inactive for more than @inactive-period, and will be deactivated after @remaining-period. If you wish to maintain your access to Supplier Sustainability Portal, please login: @site-url .\r\n\r\nIf you have forgotten your password or your password has expired, you can request a new password here: @site-url/user/password"
+stages: "1|18|21|1 year and 6 months|6 months\r\n2|21|23|1 year and 9 months|3 months\r\n3|23|24|1 year and 11 months|1 month"
+exclude_roles:
+  anonymous: anonymous

@@ -1,0 +1,160 @@
+<?php
+
+/**
+ * @file
+ * Sitewide alterations for SSP.
+ */
+
+/**
+ * Implements hook_cron().
+ */
+function ssp_site_cron() {
+  $database = \Drupal::database();
+  $config = \Drupal::config('ssp_site.inactive_users');
+  $excludeRoles = [];
+  // Get exclude roles info from config.
+  if ($excludeRolesConf = $config->get('exclude_roles')) {
+    $excludeRoles = array_keys(array_filter($excludeRolesConf));
+  }
+  // Get stages info from config.
+  $stagesConf = $config->get('stages');
+
+  $lastStage = [];
+  foreach (explode("\n", $stagesConf) as $stage) {
+    $stageInfo = explode("|", $stage);
+    $lastStage = $stageInfo;
+    _ssp_site_fill_inactive_users_queue('-' . $stageInfo[1] . ' months', '-' . $stageInfo[2] . ' months', $stageInfo[0], $excludeRoles);
+  }
+  // Delete all users who didn't access to site in configured periods.
+  $start = (new DrupalDateTime('-' . $lastStage[2] . ' months'))->getTimestamp();
+
+  // Get automatically previously blocked users.
+  $result = $database->select('users_data', 'ud')
+    ->fields('ud', ['uid'])
+    ->condition('module', 'ssp_site')
+    ->condition('name', 'inactive_user_auto_blocked')
+    ->condition('value', 1)
+    ->execute()
+    ->fetchAllAssoc('uid');
+  $users_blocked = array_keys($result);
+  // Base user query exclude anonymous, superuser and blocked.
+  $base_user_query = \Drupal::entityQuery('user')
+    ->accessCheck(FALSE)
+    ->condition('status', 1)
+    ->condition('uid', 1, '>');
+  if ($users_blocked) {
+    $base_user_query->condition('uid', $users_blocked, 'NOT IN');
+  }
+  // Exclude some users with configured roles.
+  if ($excludeRoles) {
+    $exclude_user_ids = \Drupal::entityQuery('user')
+      ->accessCheck(FALSE)
+      ->condition('roles', $excludeRoles, 'IN')
+      ->execute();
+    // Remove users with specified roles from query.
+    if ($exclude_user_ids) {
+      $base_user_query->condition('uid', $exclude_user_ids, 'NOT IN');
+    }
+  }
+  $old_access_query = clone $base_user_query;
+  $old_access_uids = $old_access_query
+    ->condition('access', $start, '<')
+    ->condition('access', 0, '>')
+    ->execute();
+
+  $never_access_query = clone $base_user_query;
+  $never_access_uids = $never_access_query
+    ->condition('created', $start, '<')
+    ->condition('access', 0)
+    ->execute();
+
+  $uids = array_merge($old_access_uids, $never_access_uids);
+  $queue = \Drupal::queue('old_users_queue', TRUE);
+  foreach ($uids as $uid) {
+    // Create a queue item.
+    $item = (object) [
+      'uid' => $uid,
+    ];
+    $queue->createItem($item);
+  }
+}
+
+/**
+ * Fill queue for inactive users.
+ */
+function _ssp_site_fill_inactive_users_queue($start_offset, $end_offset, $notify_number, $excludeRoles) {
+  // Get info about already processed users.
+  $database = \Drupal::database();
+  $query = $database->select('users_data', 'ud')
+    ->fields('ud', ['uid'])
+    ->condition('module', 'ssp_site');
+
+  $orGroup = $query->orConditionGroup();
+  // Add condition about already sent notification.
+  $group_notified = $query->andConditionGroup();
+  $group_notified
+    ->condition('name', 'inactive_user_sent_email')
+    ->condition('value', $notify_number, '>=');
+  $orGroup->condition($group_notified);
+
+  // Add condition about blocked users.
+  $group_blocked = $query->andConditionGroup();
+  $group_blocked
+    ->condition('name', 'inactive_user_auto_blocked')
+    ->condition('value', 1);
+  $orGroup->condition($group_blocked);
+
+  // Add complex OR condition to main query.
+  $query->condition($orGroup);
+  // Execute query.
+  $result = $query->execute()->fetchAllAssoc('uid');
+  $exclude_uids = array_keys($result);
+
+  // Select users with last access from period of months.
+  $start = (new DrupalDateTime($start_offset))->getTimestamp();
+  $end = (new DrupalDateTime($end_offset))->getTimestamp();
+  $query = \Drupal::entityQuery('user')
+    ->accessCheck(FALSE)
+    ->condition('status', 1)
+    ->condition('access', $start, '<')
+    ->condition('access', $end, '>=')
+    ->condition('uid', 1, '>');
+  if ($excludeRoles) {
+    $exclude_user_by_roles_ids = \Drupal::entityQuery('user')
+      ->accessCheck(FALSE)
+      ->condition('roles', $excludeRoles, 'IN')
+      ->execute();
+    $exclude_uids = array_merge($exclude_uids, array_keys($exclude_user_by_roles_ids));
+  }
+  if ($exclude_uids) {
+    $query->condition('uid', $exclude_uids, 'NOT IN');
+  }
+  $uids = $query->execute();
+  foreach ($uids as $uid) {
+    // Create a queue item.
+    $queue = \Drupal::queue('inactive_users_queue', TRUE);
+    $item = (object) [
+      'uid' => $uid,
+      'notify_number' => $notify_number - 1,
+    ];
+    $queue->createItem($item);
+    // Set stage information to user.
+    \Drupal::service('user.data')->set('ssp_site', $uid, 'inactive_user_sent_email', $notify_number - 1);
+  }
+}
+
+/**
+ * Implements hook_mail().
+ */
+function ssp_site_mail($key, &$message, $params) {
+  switch ($key) {
+    case 'inactive_user_notify':
+      // Prepare email parts.
+      $message['subject'] = $params['subject'];
+      $message['body'][] = $params['message'];
+      break;
+
+    default:
+      break;
+  }
+}

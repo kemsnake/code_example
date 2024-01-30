@@ -1,0 +1,16 @@
+ssp_site.inactive_users:
+  type: config_entity
+  label: 'Inactive users config'
+  mapping:
+    email_template:
+      type: string
+      label: 'Email template'
+    stages:
+      type: string
+      label: 'Stages'
+    exclude_roles:
+      type: sequence
+      label: 'Exclude roles'
+      sequence:
+        type: string
+        label: 'Role'

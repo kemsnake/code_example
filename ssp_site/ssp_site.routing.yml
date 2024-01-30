@@ -1,0 +1,7 @@
+ssp_site.admin_ssp_config.inactive_users:
+  path: '/admin/ssp-config/inactive-users'
+  defaults:
+    _form: '\Drupal\ssp_site\Form\InactiveUsersForm'
+    _title: 'Inactive users'
+  requirements:
+    _permission: 'system_admin+neste_admin'
